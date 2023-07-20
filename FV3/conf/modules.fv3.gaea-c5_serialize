@@ -1,0 +1,13 @@
+# NOTE: the "module purge" and loading of the module command are
+# handled by the module-setup.sh (or .csh) script.
+##
+## load programming environment
+## this typically includes compiler, MPI and job scheduler
+##
+module load PrgEnv-gnu
+module load gcc/12.2.0
+module load cray-mpich/8.1.25
+module load cray-hdf5/1.12.2.3
+module load cray-netcdf/4.9.0.3
+module load boost/1.79.0
+module load cmake/3.23.1
