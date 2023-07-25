@@ -47,7 +47,7 @@ $(error Need at least make version $(need).  Load module gmake/3.81)
 endif
 
 NETCDF_ROOT = $(NETCDF_DIR)
-INCLUDE = -I$(NETCDF_ROOT)/include -I$(SERIALBOC_ROOT)/include
+INCLUDE = -I$(NETCDF_ROOT)/include -I$(SERIALBOX_ROOT)/include
 
 # The FPPFLAGS option -DHARMONIZE_PROCEDURE_POINTER_INTENTS is specified
 # to avoid unwanted errors when compiling the model. The source of the
