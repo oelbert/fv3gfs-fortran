@@ -11,7 +11,7 @@ ifeq ($(origin FC),default)
 FC = ftn
 endif
 ifeq ($(origin CC),default)
-CC = cc
+CC = cc -DHAVE_GETTID
 endif
 ifeq ($(origin CXX),default)
 CXX = CC
@@ -23,12 +23,14 @@ LD = ftn
 #########
 # default is 64-bit OpenMP non-hydrostatic build using AVX2
 DEBUG =
-REPRO = Y
+REPRO =
 VERBOSE =
 OPENMP = Y
 AVX2 = Y
 HYDRO = N
 32BIT = N
+
+MPI_ROOT = $(MPICH_DIR)
 
 include $(ESMFMKFILE)
 ESMF_INC = $(ESMF_F90COMPILEPATHS)
@@ -56,10 +58,10 @@ INCLUDE = -I$(NETCDF_ROOT)/include -I$(SERIALBOX_ROOT)/include
 # in the atmos_model.F90 and the way the "intent" of the arguments are
 # defined in the procedures the pointer points to.  This issue comes up
 # when using newer Intel compilers.
-FPPFLAGS := -fpp -Wp,-w -DHARMONIZE_PROCEDURE_POINTER_INTENTS $(INCLUDE) -fPIC
-CFLAGS := $(INCLUDE) -fPIC
+FPPFLAGS := -cpp -Wp,-w -DHARMONIZE_PROCEDURE_POINTER_INTENTS $(INCLUDE)
+CFLAGS := $(INCLUDE)
 
-FFLAGS := $(INCLUDE) -fPIC -fno-alias -auto -safe-cray-ptr -ftz -assume byterecl -nowarn -sox -align array64byte
+FFLAGS := $(INCLUDE) -fcray-pointer -ffree-line-length-none -fno-range-check -fbacktrace -fallow-argument-mismatch
 
 CPPDEFS += -Duse_libMPI -Duse_netCDF -DSPMD -DUSE_LOG_DIAG_FIELD_INFO -DUSE_GFSL63 -DGFS_PHYS -DSERIALIZE 
 CPPDEFS += -DNEW_TAUCTMAX -DINTERNAL_FILE_NML -DNO_INLINE_POST -Duse_LARGEFILE
@@ -80,44 +82,39 @@ endif
 
 ifeq ($(32BIT),Y)
 CPPDEFS += -DOVERLOAD_R4 -DOVERLOAD_R8
-FFLAGS += -i4 -real-size 32
 else
-FFLAGS += -i4 -real-size 64 -no-prec-div -no-prec-sqrt
+FFLAGS += -fdefault-double-8 -fdefault-real-8
 endif
 
-# Note that on Gaea's C5 partition we use the -march=core-avx-i flag instead of
-# -xCORE-AVX2 or -march=core-avx2.
-ifeq ($(AVX2),Y)
-FFLAGS += -march=core-avx-i -qno-opt-dynamic-align
-CFLAGS += -march=core-avx-i -qno-opt-dynamic-align
+ifeq ($(AVX),Y)
+FFLAGS += -march=native
+CFLAGS += -march=native
 else
-FFLAGS += -xHOST -qno-opt-dynamic-align
-CFLAGS += -xHOST -qno-opt-dynamic-align
+FFLAGS += -march=native
+CFLAGS += -march=native
 endif
 
-FFLAGS_OPT = -O2 -debug minimal -fp-model source -qoverride-limits -qopt-prefetch=3
-FFLAGS_REPRO = -O2 -debug minimal -fp-model source -qoverride-limits -g -traceback
-FFLAGS_DEBUG = -g -O0 -check -check noarg_temp_created -check nopointer -warn -warn noerrors -fp-stack-check -fstack-protector-all -fpe0 -debug -traceback -ftrapuv
+FFLAGS_OPT = -O2 -fno-range-check
+FFLAGS_REPRO = -O2 -ggdb -fno-range-check
+FFLAGS_DEBUG = -O0 -ggdb -fno-unsafe-math-optimizations -frounding-math -fsignaling-nans -ffpe-trap=invalid,zero,overflow -fbounds-check
 
-TRANSCENDENTALS := -fast-transcendentals
-FFLAGS_OPENMP = -qopenmp
-FFLAGS_VERBOSE = -v -V -what
+TRANSCENDENTALS :=
+FFLAGS_OPENMP = -fopenmp
+FFLAGS_VERBOSE = -v
 
-CFLAGS += -D__IFC -sox -fp-model source
-
-CFLAGS_OPT = -O2 -debug minimal
-CFLAGS_REPRO = -O2 -debug minimal
-CFLAGS_OPENMP = -qopenmp
-CFLAGS_DEBUG = -O0 -g -ftrapuv -traceback
+CFLAGS_OPT = -O2
+CFLAGS_REPRO = -O2 -ggdb
+CFLAGS_OPENMP = -fopenmp
+CFLAGS_DEBUG = -O0 -g -ggdb
 
 # Optional Testing compile flags.  Mutually exclusive from DEBUG, REPRO, and OPT
 # *_TEST will match the production if no new option(s) is(are) to be tested.
-FFLAGS_TEST = -O3 -debug minimal -fp-model source -qoverride-limits
+FFLAGS_TEST = -O3 -debug minimal
 CFLAGS_TEST = -O2
 
 LDFLAGS :=
 LDFLAGS +=  -L$(SERIALBOX_ROOT)/lib  -lSerialboxFortran -lSerialboxC -lSerialboxCore -L/lib/x86_64-linux-gnu -lpthread -lstdc++ -lstdc++fs
-LDFLAGS_OPENMP := -qopenmp
+LDFLAGS_OPENMP := -fopenmp
 LDFLAGS_VERBOSE := -Wl,-V,--verbose,-cref,-M
 
 # start with blank LIBS
