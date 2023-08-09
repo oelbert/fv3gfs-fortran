@@ -32,9 +32,8 @@ HYDRO = N
 
 MPI_ROOT = $(MPICH_DIR)
 
-include $(ESMFMKFILE)
-ESMF_INC = $(ESMF_F90COMPILEPATHS)
-ESMF_LIB = $(ESMF_F90ESMFLINKPATHS) $(ESMF_F90ESMFLINKLIBS)
+ESMF_INC = $(ESMF_DIR)/include
+ESMF_LIB = $(ESMF_DIR)/lib
 
 NEMSIOINC = -I$(NCEPLIBS_DIR)/include
 NCEPLIBS = $(ESMF_LIB) -L$(NCEPLIBS_DIR)/lib -lnemsio_d -lbacio_4 -lsp_v2.0.2_d -lw3emc_d -lw3nco_d
@@ -49,7 +48,7 @@ $(error Need at least make version $(need).  Load module gmake/3.81)
 endif
 
 NETCDF_ROOT = $(NETCDF_DIR)
-INCLUDE = -I$(NETCDF_ROOT)/include -I$(SERIALBOX_ROOT)/include
+INCLUDE = -I$(NETCDF_ROOT)/include -I$(SERIALBOX_ROOT)/include $(ESMF_INC)
 
 # The FPPFLAGS option -DHARMONIZE_PROCEDURE_POINTER_INTENTS is specified
 # to avoid unwanted errors when compiling the model. The source of the
@@ -119,6 +118,7 @@ LDFLAGS_VERBOSE := -Wl,-V,--verbose,-cref,-M
 
 # start with blank LIBS
 LIBS :=
+LIBS += $(ESMF_LIB)
 
 ifneq ($(REPRO),)
 CFLAGS += $(CFLAGS_REPRO)
