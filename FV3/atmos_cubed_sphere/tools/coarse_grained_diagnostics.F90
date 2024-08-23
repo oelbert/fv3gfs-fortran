@@ -9,9 +9,10 @@ module coarse_grained_diagnostics_mod
   use mpp_domains_mod, only: domain2d, EAST, NORTH
   use mpp_mod, only: FATAL, mpp_error
   use coarse_graining_mod, only: block_sum, get_fine_array_bounds, get_coarse_array_bounds, MODEL_LEVEL, &
-                                 weighted_block_average, PRESSURE_LEVEL, vertically_remap_field, &
+                                 weighted_block_average, PRESSURE_LEVEL, PRESSURE_LEVEL_EXTRAPOLATE, vertically_remap_field, &
                                  vertical_remapping_requirements, mask_area_weights, &
-                                 block_edge_sum_x, block_edge_sum_y, eddy_covariance_2d_weights, eddy_covariance_3d_weights
+                                 block_edge_sum_x, block_edge_sum_y, eddy_covariance_2d_weights, eddy_covariance_3d_weights, &
+                                 BLENDED_AREA_WEIGHTED, compute_blending_weights_agrid, blended_area_weighted_coarse_grain_field
   use time_manager_mod, only: time_type
   use tracer_manager_mod, only: get_tracer_index, get_tracer_names
   
@@ -843,11 +844,13 @@ contains
     real, allocatable :: work_2d(:,:), work_2d_coarse(:,:), work_3d_coarse(:,:,:)
     real, allocatable :: mass(:,:,:), height_on_interfaces(:,:,:), masked_area(:,:,:)
     real, allocatable :: phalf(:,:,:), upsampled_coarse_phalf(:,:,:)
+    real, allocatable :: blending_weights(:,:,:)
     real, allocatable, target :: vorticity(:,:,:)
     integer :: is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, npz
     integer :: isd, ied, jsd, jed
     logical :: used
     logical :: need_2d_work_array, need_3d_work_array, need_mass_array, need_height_array, need_masked_area_array
+    logical :: extrapolate
     integer :: index, i, j
     character(len=256) :: error_message
 
@@ -856,7 +859,9 @@ contains
     call get_need_mass_array(Atm(tile_count)%coarse_graining%strategy, need_mass_array)
     call get_need_height_array(need_height_array)
 
-    if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL) then
+    if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL .or. &
+        trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL_EXTRAPOLATE .or. &
+        trim(Atm(tile_count)%coarse_graining%strategy) .eq. BLENDED_AREA_WEIGHTED) then
       call get_need_masked_area_array(need_masked_area_array)
     else
       need_masked_area_array = .false.
@@ -876,7 +881,8 @@ contains
 
     if (need_3d_work_array) then
        allocate(work_3d_coarse(is_coarse:ie_coarse,js_coarse:je_coarse,1:npz))   
-       if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL) then
+       if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL .or. &
+           trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL_EXTRAPOLATE) then
         allocate(phalf(is:ie,js:je,1:npz+1))      
         allocate(upsampled_coarse_phalf(is:ie,js:je,1:npz+1))
 
@@ -886,6 +892,18 @@ contains
               Atm(tile_count)%ptop, &
               phalf, &
               upsampled_coarse_phalf)
+       elseif (trim(Atm(tile_count)%coarse_graining%strategy) .eq. BLENDED_AREA_WEIGHTED) then
+        allocate(phalf(is:ie,js:je,1:npz+1))      
+        allocate(upsampled_coarse_phalf(is:ie,js:je,1:npz+1))
+        allocate(blending_weights(is_coarse:ie_coarse,js_coarse:je_coarse,1:npz))
+
+        call vertical_remapping_requirements( &
+              Atm(tile_count)%delp(is:ie,js:je,1:npz), &
+              Atm(tile_count)%gridstruct%area(is:ie,js:je), &
+              Atm(tile_count)%ptop, &
+              phalf, &
+              upsampled_coarse_phalf, &
+              blending_weights)
        endif
     endif
 
@@ -896,10 +914,12 @@ contains
 
     if (need_masked_area_array) then
       allocate(masked_area(is:ie,js:je,1:npz))
+      extrapolate = trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL_EXTRAPOLATE
       call mask_area_weights( &
            Atm(tile_count)%gridstruct%area(is:ie,js:je), &
            phalf, &
            upsampled_coarse_phalf, &
+           extrapolate, &
            masked_area)
     endif
 
@@ -938,12 +958,22 @@ contains
                                                        mass, &
                                                        Atm(tile_count)%lagrangian_tendency_of_hydrostatic_pressure(is:ie,js:je,1:npz), &
                                                        work_3d_coarse)
-          else if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL) then
+          elseif (&
+            trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL .or. &
+            trim(Atm(tile_count)%coarse_graining%strategy) .eq. PRESSURE_LEVEL_EXTRAPOLATE) then
              call coarse_grain_3D_field_on_pressure_levels(is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, npz, &
                                                           coarse_diagnostics(index), masked_area, phalf, &
                                                           upsampled_coarse_phalf, Atm(tile_count)%ptop, &
                                                           Atm(tile_count)%lagrangian_tendency_of_hydrostatic_pressure(is:ie,js:je,1:npz), &
                                                           work_3d_coarse)
+          else if (trim(Atm(tile_count)%coarse_graining%strategy) .eq. BLENDED_AREA_WEIGHTED) then
+            call coarse_grain_3D_field_blended_area_weighted(is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, npz, &
+                                                             coarse_diagnostics(index), masked_area, phalf, &
+                                                             upsampled_coarse_phalf, Atm(tile_count)%ptop, &
+                                                             Atm(tile_count)%lagrangian_tendency_of_hydrostatic_pressure(is:ie,js:je,1:npz), &
+                                                             Atm(tile_count)%gridstruct%area(is:ie,js:je), &
+                                                             blending_weights, &
+                                                             work_3d_coarse)
           else
             write(error_message, *) 'fv_coarse_diag: invalid coarse-graining strategy provided for 3D variables, ' // &
             trim(Atm(tile_count)%coarse_graining%strategy)
@@ -993,8 +1023,7 @@ contains
    end subroutine coarse_grain_3D_field_on_model_levels
 
    subroutine coarse_grain_3D_field_on_pressure_levels(is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, &
-                                                       npz, coarse_diag, masked_area, phalf, upsampled_coarse_phalf, &
-                                                       ptop, omega, result)
+    npz, coarse_diag, masked_area, phalf, upsampled_coarse_phalf, ptop, omega, result)
     integer, intent(in) :: is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, npz
     type(coarse_diag_type) :: coarse_diag
     real, intent(in) :: masked_area(is:ie,js:je,1:npz)
@@ -1045,6 +1074,68 @@ contains
     endif
    end subroutine coarse_grain_3D_field_on_pressure_levels
 
+   subroutine coarse_grain_3D_field_blended_area_weighted(is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, &
+                                                          npz, coarse_diag, masked_area, phalf, upsampled_coarse_phalf, &
+                                                          ptop, omega, area, blending_weights, result)
+    integer, intent(in) :: is, ie, js, je, is_coarse, ie_coarse, js_coarse, je_coarse, npz
+    type(coarse_diag_type) :: coarse_diag
+    real, intent(in) :: masked_area(is:ie,js:je,1:npz)
+    real, intent(in) :: phalf(is:ie,js:je,1:npz+1), upsampled_coarse_phalf(is:ie,js:je,1:npz+1)
+    real, intent(in) :: ptop
+    real, intent(in) :: omega(is:ie,js:je,1:npz)
+    real, intent(in) :: area(is:ie,js:je)
+    real, intent(in) :: blending_weights(is_coarse:ie_coarse,js_coarse:je_coarse,1:npz)
+    real, intent(out) :: result(is_coarse:ie_coarse,js_coarse:je_coarse,1:npz)
+
+    real, allocatable :: remapped_field(:,:,:), remapped_omega(:,:,:)
+    real, allocatable :: pressure_coarse_grained(:,:,:)
+    character(len=256) :: error_message
+
+    if (trim(coarse_diag%reduction_method) .ne. EDDY_COVARIANCE) then
+      call blended_area_weighted_coarse_grain_field(&
+        coarse_diag%data%var3, &
+        phalf, &
+        upsampled_coarse_phalf, &
+        ptop, &
+        masked_area, &
+        area, &
+        blending_weights, &
+        result)
+    else
+      allocate(remapped_field(is:ie,js:je,1:npz))
+      allocate(remapped_omega(is:ie,js:je,1:npz))
+      allocate(pressure_coarse_grained(is_coarse:ie_coarse,js_coarse:je_coarse,1:npz))
+
+      call eddy_covariance_2d_weights( &
+         area(is:ie,js:je), &
+         omega(is:ie,js:je,1:npz), &
+         coarse_diag%data%var3, &
+         result &
+      )
+
+      call vertically_remap_field( &
+        phalf, &
+        coarse_diag%data%var3, &
+        upsampled_coarse_phalf, &
+        ptop, &
+        remapped_field)
+      call vertically_remap_field( &
+        phalf, &
+        omega, &
+        upsampled_coarse_phalf, &
+        ptop, &
+        remapped_omega)
+      call eddy_covariance_3d_weights( &
+        masked_area(is:ie,js:je,1:npz), &
+        remapped_omega(is:ie,js:je,1:npz), &
+        remapped_field(is:ie,js:je,1:npz), &
+        pressure_coarse_grained &
+      )
+
+      result = blending_weights * pressure_coarse_grained + (1 - blending_weights) * result
+    endif
+   end subroutine coarse_grain_3D_field_blended_area_weighted
+   
    subroutine coarse_grain_2D_field(is, ie, js, je, npz, is_coarse, ie_coarse, js_coarse, je_coarse, &
                                     Atm, coarse_diag, height_on_interfaces, result)
     integer, intent(in) :: is, ie, js, je, npz, is_coarse, ie_coarse, js_coarse, je_coarse
