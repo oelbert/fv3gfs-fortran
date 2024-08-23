@@ -6,7 +6,7 @@ import xarray as xr
 import f90nml
 import numpy as np
 
-sys.path.append("/serialbox/python")  # noqa: E402
+sys.path.append("/autofs/ncrc-svm1_home2/Oliver.Elbert/code/repos/serialbox/install/python/")  # noqa: E402
 import serialbox  # noqa: E402
 
 
@@ -62,18 +62,20 @@ def main(data_path: str, output_path: str, merge_blocks: bool):
             os.path.join(data_path, "input.nml"), namelist_filename_out
         )
     namelist = f90nml.read(namelist_filename_out)
-    total_ranks = (
-        6 * namelist["fv_core_nml"]["layout"][0] * (
-            namelist["fv_core_nml"]["layout"][1]
+    if namelist["fv_core_nml"]["grid_type"] <= 3:
+        total_ranks = (
+            6 * namelist["fv_core_nml"]["layout"][0] * namelist["fv_core_nml"]["layout"][1]
         )
-    )
+    else:
+        total_ranks = (
+            namelist["fv_core_nml"]["layout"][0] * namelist["fv_core_nml"]["layout"][1]
+        )
     nx = int((namelist["fv_core_nml"]['npx'] - 1) / (
         namelist["fv_core_nml"]['layout'][0]
     ))
     ny = int((namelist["fv_core_nml"]['npy'] - 1) / (
         namelist["fv_core_nml"]['layout'][1]
     ))
-
     savepoint_names = get_all_savepoint_names(data_path)
     for savepoint_name in sorted(list(savepoint_names)):
         rank_list = []
@@ -84,11 +86,14 @@ def main(data_path: str, output_path: str, merge_blocks: bool):
                 serializer.get_savepoint(savepoint_name)[0]
             )
         )
+        print(f"Reading from savepoint {savepoint_name}")
         serializer_list = []
         for rank in range(total_ranks):
+            print(f"Reading rank {rank}")
             serializer = get_serializer(data_path, rank)
             serializer_list.append(serializer)
             savepoints = serializer.get_savepoint(savepoint_name)
+            print(f"There are {len(savepoints)} savepoints")
             rank_data = {}
             for name in set(names_list):
                 rank_data[name] = []
