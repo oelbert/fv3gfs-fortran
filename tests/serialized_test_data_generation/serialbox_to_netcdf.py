@@ -18,7 +18,15 @@ def get_parser():
         help="path of serialbox data to convert",
     )
     parser.add_argument(
-        "output_path", type=str, help="output directory where netcdf data will be saved"
+        "output_path",
+        type=str,
+        help="output directory where netcdf data will be saved"
+    )
+    parser.add_argument(
+        "-m", "--merge",
+        action='store_true',
+        default=False,
+        help="merges datastreams blocked into separate savepoints"
     )
     return parser
 
@@ -45,16 +53,26 @@ def get_serializer(data_path, rank):
     )
 
 
-def main(data_path: str, output_path: str):
+def main(data_path: str, output_path: str, merge_blocks: bool):
     os.makedirs(output_path, exist_ok=True)
     namelist_filename_in = os.path.join(data_path, "input.nml")
     namelist_filename_out = os.path.join(output_path, "input.nml")
     if namelist_filename_out != namelist_filename_in:
-        shutil.copyfile(os.path.join(data_path, "input.nml"), namelist_filename_out)
+        shutil.copyfile(
+            os.path.join(data_path, "input.nml"), namelist_filename_out
+        )
     namelist = f90nml.read(namelist_filename_out)
     total_ranks = (
-        6 * namelist["fv_core_nml"]["layout"][0] * namelist["fv_core_nml"]["layout"][1]
+        6 * namelist["fv_core_nml"]["layout"][0] * (
+            namelist["fv_core_nml"]["layout"][1]
+        )
     )
+    nx = int((namelist["fv_core_nml"]['npx'] - 1) / (
+        namelist["fv_core_nml"]['layout'][0]
+    ))
+    ny = int((namelist["fv_core_nml"]['npy'] - 1) / (
+        namelist["fv_core_nml"]['layout'][1]
+    ))
 
     savepoint_names = get_all_savepoint_names(data_path)
     for savepoint_name in sorted(list(savepoint_names)):
@@ -62,7 +80,9 @@ def main(data_path: str, output_path: str):
         # all ranks have the same names, just look at first one
         serializer = get_serializer(data_path, rank=0)
         names_list = list(
-            serializer.fields_at_savepoint(serializer.get_savepoint(savepoint_name)[0])
+            serializer.fields_at_savepoint(
+                serializer.get_savepoint(savepoint_name)[0]
+            )
         )
         serializer_list = []
         for rank in range(total_ranks):
@@ -76,14 +96,44 @@ def main(data_path: str, output_path: str):
                     rank_data[name].append(
                         read_serialized_data(serializer, savepoint, name)
                     )
+                if merge_blocks and len(rank_data[name] > 1):
+                    full_data = np.array(rank_data[name])
+                    if len(full_data.shape) > 1:
+                        if (nx*ny == full_data.shape[0]*full_data.shape[1]):
+                            # If we have an (i, x) array from each block reshape it
+                            new_shape = (nx, ny) + full_data.shape[2:]
+                            full_data = full_data.reshape(new_shape)
+                        elif full_data.shape[1] == namelist["fv_core_nml"]['npz']:
+                            # If it's a k-array from each block just take one
+                            full_data = full_data[0]
+                        else:
+                            return IndexError(
+                                "Shape mismatch in block merging: "
+                                f"{full_data.shape[0]} by {full_data.shape[1]} "
+                                f"is not compatible with {nx} by {ny}"
+                            )
+                    elif len(full_data.shape) == 1:
+                        # if it's a scalar from each block then just take one
+                        full_data = full_data[0]
+                    else:
+                        raise IndexError(f"{name} data appears to be empty")
+                    rank_data[name] = [full_data]
             rank_list.append(rank_data)
-        n_savepoints = len(savepoints)  # checking from last rank is fine
+        if merge_blocks:
+            n_savepoints = 1
+        else:
+            n_savepoints = len(savepoints)  # checking from last rank is fine
         data_vars = {}
         if n_savepoints > 0:
             encoding = {}
             for varname in set(names_list).difference(["rank"]):
                 data_shape = list(rank_list[0][varname][0].shape)
-                if savepoint_name in ["FVDynamics-In", "FVDynamics-Out", "Driver-In", "Driver-Out"]:
+                if savepoint_name in [
+                    "FVDynamics-In",
+                    "FVDynamics-Out",
+                    "Driver-In",
+                    "Driver-Out"
+                ]:
                     if varname in [
                         "qvapor",
                         "qliquid",
@@ -109,12 +159,16 @@ def main(data_path: str, output_path: str):
                     encoding[varname] = {"zlib": True, "complevel": 1}
             dataset = xr.Dataset(data_vars=data_vars)
             dataset.to_netcdf(
-                os.path.join(output_path, f"{savepoint_name}.nc"), encoding=encoding
+                os.path.join(
+                    output_path, f"{savepoint_name}.nc"
+                ), encoding=encoding
             )
 
 
 def get_data(data_shape, total_ranks, n_savepoints, output_list, varname):
-    array = np.full([n_savepoints, total_ranks] + data_shape, fill_value=np.nan)
+    array = np.full(
+        [n_savepoints, total_ranks] + data_shape, fill_value=np.nan
+    )
     dims = ["savepoint", "rank"] + [
         f"dim_{varname}_{i}" for i in range(len(data_shape))
     ]
@@ -131,4 +185,6 @@ def get_data(data_shape, total_ranks, n_savepoints, output_list, varname):
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    main(data_path=args.data_path, output_path=args.output_path)
+    main(data_path=args.data_path,
+         output_path=args.output_path,
+         merge_blocks=args.merge)

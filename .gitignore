@@ -27,3 +27,5 @@ venv/**
 **/*.egg-info
 *.gcno
 *.gcda
+tests/serialized_test_data_generation/INPUT/
+tests/serialized_test_data_generation/*.tar
